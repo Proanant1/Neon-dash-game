@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Cyber Runner: Infinite Dash</title>
+    <script src="https://cdn.jsdelivr.net/npm/@farcade/game-sdk@latest/dist/index.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #202028;
+            font-family: 'Press Start 2P', cursive;
+            touch-action: none;
+        }
+
+        #gameCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            outline: none; /* Remove focus ring */
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #fff;
+            text-shadow: 2px 2px #000;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        .hud-item {
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        #start-screen {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #fff;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border: 4px solid #0ff;
+            border-radius: 10px;
+            z-index: 20;
+        }
+
+        button {
+            background: #0ff;
+            border: none;
+            padding: 15px 30px;
+            font-family: 'Press Start 2P', cursive;
+            font-size: 16px;
+            cursor: pointer;
+            margin-top: 20px;
+            color: #000;
+        }
+
+        button:active {
+            background: #fff;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        @media (max-width: 600px) {
+            .hud-item { font-size: 10px; }
+            button { font-size: 12px; padding: 10px 20px; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="hud-item">SCORE: <span id="scoreVal">0</span></div>
+        <div class="hud-item">HI-SCORE: <span id="hiscoreVal">0</span></div>
+        <div class="hud-item" id="shield-status" style="color: gold; display: none;">SHIELD ACTIVE</div>
+        <div class="hud-item" id="slow-status" style="color: violet; display: none;">SLOW MO</div>
+        <div class="hud-item" id="double-jump-status" style="color: #0f0; display: none;">DOUBLE JUMP READY</div>
+    </div>
+
+    <div id="start-screen">
+        <h1>CYBER RUNNER</h1>
+        <p>Avoid Red Spikes & Flying Drones</p>
+        <p style="color:gold">Yellow = Shield (9s)</p>
+        <p style="color:violet">Purple = Slow Mo</p>
+        <p style="color:#0f0">Double Jump = Every 25s</p>
+        <button id="startBtn">START GAME</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+(async function() {
+    console.log('[Run Game] Starting game execution...');
+
+    window.addEventListener('unhandledrejection', (event) => {
+        console.error('[Run Game] Unhandled promise rejection:', event.reason);
+    });
+
+    try {
+        // === FILE: main.js ===
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        let isMuted = false;
+
+        // --- SDK Integration Functions ---
+        function initSDK() {
+            if (window.FarcadeSDK) {
+                console.log("Farcade SDK detected.");
+
+                // 2. Play Again Handler
+                window.FarcadeSDK.onPlayAgain(() => {
+                    document.getElementById('start-screen').classList.add('hidden');
+                    resetGame();
+                });
+
+                // 2 & 5. REQUIRED: Toggle Mute Handler
+                window.FarcadeSDK.onToggleMute((data) => {
+                    // Supporting both data.mute and data.isMuted to be safe
+                    const muted = (data.mute !== undefined) ? data.mute : data.isMuted;
+                    isMuted = !!muted;
+                    
+                    if (isMuted) {
+                        if (audioCtx.state !== 'suspended') audioCtx.suspend();
+                    } else {
+                        if (audioCtx.state === 'suspended') audioCtx.resume();
+                    }
+                });
+
+                // Load High Score
+                if (window.FarcadeSDK.gameState && window.FarcadeSDK.gameState.highScore !== undefined) {
+                    highScore = window.FarcadeSDK.gameState.highScore;
+                    document.getElementById('hiscoreVal').innerText = highScore;
+                }
+            } else {
+                console.warn("Farcade SDK not found.");
+            }
+        }
+
+        // Initialize SDK
+        initSDK();
+        
+        function playSound(type) {
+            if (isMuted) return;
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            osc.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+    
+            const now = audioCtx.currentTime;
+    
+            if (type === 'jump') {
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(150, now);
+                osc.frequency.exponentialRampToValueAtTime(600, now + 0.1);
+                gainNode.gain.setValueAtTime(0.1, now);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+                osc.start(now);
+                osc.stop(now + 0.1);
+            } else if (type === 'powerup') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(600, now);
+                osc.frequency.linearRampToValueAtTime(1200, now + 0.1);
+                gainNode.gain.setValueAtTime(0.1, now);
+                gainNode.gain.linearRampToValueAtTime(0.01, now + 0.3);
+                osc.start(now);
+                osc.stop(now + 0.3);
+            } else if (type === 'doublejump') {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(300, now);
+                osc.frequency.linearRampToValueAtTime(800, now + 0.15);
+                gainNode.gain.setValueAtTime(0.1, now);
+                gainNode.gain.linearRampToValueAtTime(0.01, now + 0.15);
+                osc.start(now);
+                osc.stop(now + 0.15);
+            } else if (type === 'crash') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(100, now);
+                osc.frequency.exponentialRampToValueAtTime(10, now + 0.3);
+                gainNode.gain.setValueAtTime(0.2, now);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+                osc.start(now);
+                osc.stop(now + 0.3);
+            }
+        }
+    
+        let musicInterval;
+        function startMusic() {
+            let beat = 0;
+            if(musicInterval) clearInterval(musicInterval);
+            musicInterval = setInterval(() => {
+                if(gameOver || isMuted) {
+                    if(gameOver) clearInterval(musicInterval);
+                    return; 
+                }
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                
+                osc.type = 'triangle';
+                if (beat % 4 === 0) {
+                    osc.frequency.value = 100;
+                } else {
+                    osc.frequency.value = 200;
+                }
+                
+                gain.gain.value = 0.05;
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.1);
+                beat++;
+            }, 250); 
+        }
+    
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Game State
+        let score = 0;
+        let highScore = 0;
+        let gameSpeed = 6;
+        let gravity = 0.6;
+        let gameOver = true;
+        let frame = 0;
+        
+        // Timers
+        let slowMoTimer = null;
+        let shieldTimer = null;
+        let doubleJumpInterval = null;
+        
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        
+        let groundHeight = 50;
+        
+        const player = {
+            x: 50,
+            y: 0,
+            w: 40,
+            h: 40,
+            dy: 0,
+            jumpForce: 12,
+            grounded: false,
+            shielded: false,
+            canDoubleJump: false,
+            color: '#0ff'
+        };
+    
+        let obstacles = [];
+        let powerups = [];
+        let particles = [];
+    
+        class Obstacle {
+            constructor() {
+                this.w = 30 + Math.random() * 20;
+                this.h = 30 + Math.random() * 30;
+                this.x = canvas.width;
+                this.markedForDeletion = false;
+                this.isFlying = Math.random() < 0.3; 
+                
+                if (this.isFlying) {
+                    this.y = canvas.height - groundHeight - this.h - 60 - (Math.random() * 50);
+                    this.color = '#ff3333'; 
+                    this.w = 40; 
+                    this.h = 20;
+                } else {
+                    this.y = canvas.height - groundHeight - this.h;
+                    this.color = '#ff5500'; 
+                }
+            }
+            update() {
+                this.x -= gameSpeed;
+                if (this.x + this.w < 0) this.markedForDeletion = true;
+            }
+            draw() {
+                ctx.fillStyle = this.color;
+                if(this.isFlying) {
+                    ctx.beginPath();
+                    ctx.moveTo(this.x, this.y + this.h/2);
+                    ctx.lineTo(this.x + this.w/2, this.y);
+                    ctx.lineTo(this.x + this.w, this.y + this.h/2);
+                    ctx.lineTo(this.x + this.w/2, this.y + this.h);
+                    ctx.fill();
+                } else {
+                    ctx.beginPath();
+                    ctx.moveTo(this.x, this.y + this.h);
+                    ctx.lineTo(this.x + this.w/2, this.y);
+                    ctx.lineTo(this.x + this.w, this.y + this.h);
+                    ctx.fill();
+                }
+            }
+        }
+    
+        class PowerUp {
+            constructor() {
+                this.r = 15;
+                this.x = canvas.width;
+                this.y = canvas.height - groundHeight - 100 - (Math.random() * 100);
+                this.type = Math.random() < 0.5 ? 'shield' : 'slow';
+                this.markedForDeletion = false;
+            }
+            update() {
+                this.x -= gameSpeed;
+                if (this.x + this.r * 2 < 0) this.markedForDeletion = true;
+            }
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+                ctx.fillStyle = this.type === 'shield' ? 'gold' : 'violet';
+                ctx.fill();
+                ctx.closePath();
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = ctx.fillStyle;
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            }
+        }
+    
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.size = Math.random() * 5 + 2;
+                this.speedX = Math.random() * 4 - 2;
+                this.speedY = Math.random() * 4 - 2;
+                this.color = color;
+                this.life = 100;
+            }
+            update() {
+                this.x += this.speedX;
+                this.y += this.speedY;
+                this.life -= 2;
+            }
+            draw() {
+                ctx.globalAlpha = this.life / 100;
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.size, this.size);
+                ctx.globalAlpha = 1.0;
+            }
+        }
+    
+        // Input Handling
+        function jump() {
+            if (player.grounded) {
+                player.dy = -player.jumpForce;
+                player.grounded = false;
+                playSound('jump');
+                // 4. Haptic Feedback (Jump)
+                if (window.FarcadeSDK && typeof window.FarcadeSDK.hapticFeedback === 'function') {
+                    window.FarcadeSDK.hapticFeedback();
+                }
+                createParticles(player.x, player.y + player.h, '#fff', 5);
+            } 
+            else if (player.canDoubleJump) {
+                player.dy = -player.jumpForce;
+                player.canDoubleJump = false; 
+                document.getElementById('double-jump-status').style.display = 'none'; 
+                playSound('doublejump');
+                // 4. Haptic Feedback (Double Jump)
+                if (window.FarcadeSDK && typeof window.FarcadeSDK.hapticFeedback === 'function') {
+                    window.FarcadeSDK.hapticFeedback();
+                }
+                createParticles(player.x, player.y + player.h, '#0f0', 8); 
+            }
+        }
+    
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' || e.code === 'ArrowUp') {
+                e.preventDefault(); // FIX: Prevent spacebar from clicking "Play Again" again
+                
+                if(gameOver) return; 
+                jump();
+            }
+        });
+    
+        window.addEventListener('touchstart', (e) => {
+            if(gameOver) return;
+            jump();
+        });
+    
+        function createParticles(x, y, color, count) {
+            for(let i=0; i<count; i++) {
+                particles.push(new Particle(x, y, color));
+            }
+        }
+    
+        function resetGame() {
+            // FIX: Blur focus from UI elements to prevent Spacebar re-triggering buttons
+            if (document.activeElement && document.activeElement !== document.body) {
+                document.activeElement.blur();
+            }
+            window.focus(); 
+
+            if (slowMoTimer) clearTimeout(slowMoTimer);
+            if (shieldTimer) clearTimeout(shieldTimer);
+            if (doubleJumpInterval) clearInterval(doubleJumpInterval);
+
+            slowMoTimer = null;
+            shieldTimer = null;
+            
+            score = 0;
+            gameSpeed = 6;
+            obstacles = [];
+            powerups = [];
+            particles = [];
+            gameOver = false;
+            player.shielded = false;
+            player.canDoubleJump = false; 
+            
+            document.getElementById('scoreVal').innerText = score;
+            document.getElementById('shield-status').style.display = 'none';
+            document.getElementById('slow-status').style.display = 'none';
+            document.getElementById('double-jump-status').style.display = 'none';
+            
+            doubleJumpInterval = setInterval(() => {
+                if(!gameOver) {
+                    player.canDoubleJump = true;
+                    document.getElementById('double-jump-status').style.display = 'block';
+                    playSound('powerup');
+                }
+            }, 25000); // 25 seconds
+
+            startMusic();
+            animate();
+        }
+    
+        function triggerSlowMo() {
+            if (slowMoTimer) clearTimeout(slowMoTimer);
+
+            gameSpeed = 3; 
+            document.getElementById('slow-status').style.display = 'block';
+            playSound('powerup');
+            
+            slowMoTimer = setTimeout(() => {
+                gameSpeed = 6 + (score * 0.001); 
+                document.getElementById('slow-status').style.display = 'none';
+                slowMoTimer = null;
+            }, 5000); 
+        }
+
+        function triggerShield() {
+            player.shielded = true;
+            document.getElementById('shield-status').style.display = 'block';
+            playSound('powerup');
+            
+            if (shieldTimer) clearTimeout(shieldTimer);
+
+            shieldTimer = setTimeout(() => {
+                if (!gameOver && player.shielded) {
+                    player.shielded = false;
+                    document.getElementById('shield-status').style.display = 'none';
+                }
+                shieldTimer = null;
+            }, 9000); 
+        }
+    
+        function animate() {
+            if (gameOver) return;
+    
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Background Grid
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for(let i=0; i<canvas.width; i+=50) {
+                ctx.moveTo(i - (frame * gameSpeed) % 50, 0);
+                ctx.lineTo(i - (frame * gameSpeed) % 50, canvas.height);
+            }
+            ctx.stroke();
+    
+            // Ground
+            ctx.fillStyle = '#111';
+            ctx.fillRect(0, canvas.height - groundHeight, canvas.width, groundHeight);
+            ctx.strokeStyle = '#0f0';
+            ctx.beginPath();
+            ctx.moveTo(0, canvas.height - groundHeight);
+            ctx.lineTo(canvas.width, canvas.height - groundHeight);
+            ctx.stroke();
+    
+            // Player Physics
+            player.dy += gravity;
+            player.y += player.dy;
+    
+            // Ground Collision
+            if (player.y + player.h > canvas.height - groundHeight) {
+                player.y = canvas.height - groundHeight - player.h;
+                player.dy = 0;
+                player.grounded = true;
+            }
+    
+            // Draw Player
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = player.shielded ? 'gold' : (player.canDoubleJump ? '#0f0' : player.color);
+            ctx.fillStyle = player.shielded ? 'gold' : player.color;
+            ctx.fillRect(player.x, player.y, player.w, player.h);
+            ctx.shadowBlur = 0;
+    
+            // Spawners
+            frame++;
+            if (frame % Math.floor(1000 / (gameSpeed * 1.5)) === 0) {
+                obstacles.push(new Obstacle());
+            }
+            if (frame % 800 === 0) {
+                powerups.push(new PowerUp());
+            }
+    
+            // Handle Obstacles
+            obstacles.forEach((obs, index) => {
+                obs.update();
+                obs.draw();
+    
+                // Collision Detection
+                if (
+                    player.x < obs.x + obs.w &&
+                    player.x + player.w > obs.x &&
+                    player.y < obs.y + obs.h &&
+                    player.y + player.h > obs.y
+                ) {
+                    if (player.shielded) {
+                        player.shielded = false;
+                        if (shieldTimer) {
+                            clearTimeout(shieldTimer);
+                            shieldTimer = null;
+                        }
+                        document.getElementById('shield-status').style.display = 'none';
+                        createParticles(obs.x, obs.y, 'gold', 10);
+                        obstacles.splice(index, 1);
+                        playSound('crash'); 
+                        // 4. Haptic Feedback (Shield Crash)
+                        if (window.FarcadeSDK && typeof window.FarcadeSDK.hapticFeedback === 'function') {
+                            window.FarcadeSDK.hapticFeedback();
+                        }
+                    } else {
+                        endGame();
+                    }
+                }
+            });
+    
+            // Handle Powerups
+            powerups.forEach((p, index) => {
+                p.update();
+                p.draw();
+    
+                // Collision
+                if (
+                    player.x < p.x + p.r &&
+                    player.x + player.w > p.x - p.r &&
+                    player.y < p.y + p.r &&
+                    player.y + player.h > p.y - p.r
+                ) {
+                    if(p.type === 'shield') {
+                        triggerShield(); 
+                        if (window.FarcadeSDK && typeof window.FarcadeSDK.hapticFeedback === 'function') {
+                            window.FarcadeSDK.hapticFeedback();
+                        }
+                    } else {
+                        triggerSlowMo();
+                        if (window.FarcadeSDK && typeof window.FarcadeSDK.hapticFeedback === 'function') {
+                            window.FarcadeSDK.hapticFeedback();
+                        }
+                    }
+                    powerups.splice(index, 1);
+                }
+            });
+    
+            // Handle Particles
+            particles.forEach((p, index) => {
+                p.update();
+                p.draw();
+                if(p.life <= 0) particles.splice(index, 1);
+            });
+    
+            // Cleanup
+            obstacles = obstacles.filter(o => !o.markedForDeletion);
+            powerups = powerups.filter(p => !p.markedForDeletion);
+    
+            // Score
+            score++;
+            document.getElementById('scoreVal').innerText = Math.floor(score/10);
+            
+            gameSpeed += 0.001; 
+    
+            requestAnimationFrame(animate);
+        }
+    
+        function endGame() {
+            gameOver = true;
+            playSound('crash');
+            
+            // 4. Haptic Feedback (Game Over)
+            if (window.FarcadeSDK && typeof window.FarcadeSDK.hapticFeedback === 'function') {
+                window.FarcadeSDK.hapticFeedback();
+            }
+
+            if(musicInterval) clearInterval(musicInterval);
+            if(doubleJumpInterval) clearInterval(doubleJumpInterval);
+            if(shieldTimer) clearTimeout(shieldTimer);
+            if(slowMoTimer) clearTimeout(slowMoTimer);
+            
+            const finalScore = Math.floor(score/10);
+            
+            // 3. SDK Call - Submit Score (This triggers the SDK overlay)
+            if (window.FarcadeSDK && window.FarcadeSDK.singlePlayer) {
+                window.FarcadeSDK.singlePlayer.actions.gameOver({ score: finalScore });
+            }
+
+            if (finalScore > highScore) {
+                highScore = finalScore;
+                if (window.FarcadeSDK && window.FarcadeSDK.singlePlayer) {
+                    window.FarcadeSDK.singlePlayer.actions.saveGameState({ 
+                        gameState: { highScore: highScore } 
+                    });
+                }
+            }
+    
+            document.getElementById('hiscoreVal').innerText = highScore;
+            
+            // Clean End Game state: No text drawn, just freezes and waits for SDK interaction
+        }
+    
+        // UI Buttons
+        document.getElementById('startBtn').addEventListener('click', () => {
+            document.getElementById('start-screen').classList.add('hidden');
+            document.getElementById('hiscoreVal').innerText = highScore;
+            resetGame();
+        });
+    
+        // Resize Listener
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            if(player.grounded) player.y = canvas.height - groundHeight - player.h;
+        });
+    // === END FILE: main.js ===
+    
+    console.log('[Run Game] Game code executed successfully');
+  } catch (error) {
+    console.error('[Run Game] Error executing game code:', error);
+    console.error('[Run Game] Stack trace:', error.stack);
+    throw error;
+  }
+})().catch(error => {
+  console.error('[Run Game] Unhandled error in game initialization:', error);
+});
+</script>
+</body>
+</html>
